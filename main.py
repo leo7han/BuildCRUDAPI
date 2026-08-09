@@ -30,5 +30,29 @@ def get_task(id: int):
     for task in tasks:
         if task["id"] == id:
             return task
-    # If the loop finishes and no task is found, return a 404 error
     return JSONResponse(status_code=404, content={"error": f"Task {id} not found"})
+
+# Stage 3: Create a new task (The missing piece!)
+@app.post("/tasks")
+def create_task(payload: dict):
+    # 1. Validation
+    title = payload.get("title", "").strip()
+    if not title:
+        return JSONResponse(
+            status_code=400, 
+            content={"error": "Title is required and cannot be empty"}
+        )
+    
+    # 2. Find the next free ID
+    next_id = max(task["id"] for task in tasks) + 1 if tasks else 1
+    
+    # 3. Create the new task
+    new_task = {
+        "id": next_id,
+        "title": title,
+        "done": False
+    }
+    
+    # 4. Add it to the list and return 201 Created
+    tasks.append(new_task)
+    return JSONResponse(status_code=201, content=new_task)
