@@ -41,15 +41,19 @@ curl -i http://localhost:8000/tasks
 
 ```
 HTTP/1.1 200 OK
-date: Sun, 09 Aug 2026 08:57:34 GMT
+date: Sun, 09 Aug 2026 09:06:41 GMT
 server: uvicorn
-content-length: 118
+content-length: 293
 content-type: application/json
 
 [
   {"id": 1, "title": "Buy groceries", "done": false},
   {"id": 2, "title": "Learn FastAPI", "done": true},
-  {"id": 3, "title": "Walk the dog", "done": false}
+  {"id": 3, "title": "Walk the dog", "done": false},
+  {"id": 4, "title": "string", "done": false},
+  {"id": 5, "title": "chicken", "done": false},
+  {"id": 6, "title": "chicken", "done": false},
+  {"id": 7, "title": "fire", "done": false}
 ]
 ```
 
@@ -57,7 +61,7 @@ content-type: application/json
 
 All endpoints are documented and testable at `/docs`:
 
-![Swagger UI](docs-screenshot.png)
+![Swagger UI](swaggerui.png)
 
 ## Notes
 
