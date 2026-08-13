@@ -63,6 +63,27 @@ All endpoints are documented and testable at `/docs`:
 
 ![Swagger UI](swaggerui.png)
 
+## Database Storage (SQLite)
+
+This API now uses a real SQLite database instead of in-memory storage. 
+* **Why SQLite?** It was chosen because it requires zero installation, lives entirely in a single file, and perfectly ensures our data survives server restarts.
+* **Where it lives:** The data is stored in `tasks.db`. This file is created and seeded automatically the first time the server runs, meaning anyone who clones this repo gets a working app instantly with no manual setup.
+
 ## Notes
 
 This project has no database — all data lives in memory and resets when the server restarts.
+
+### How to Run
+Start the API locally with this single command:
+`uvicorn main:app --reload`
+
+### Database Exploration
+I verified the database manually using DB Browser for SQLite. Here is an example query I ran to fetch only the completed tasks:
+
+![DataBrowser](databrowser.png)
+
+```sql
+'SELECT * FROM tasks WHERE done = 1;'
+
+
+
