@@ -105,30 +105,50 @@ def get_task(id: int):
     return JSONResponse(status_code=404, content={"error": "Task not found"})
 
 
-# ---- Stage 3: Create ----
+# ---- Stage 3: Create (Database) ----
 @app.post("/tasks", status_code=201)
 def create_task(task: Task):
-    new_id = max((t["id"] for t in tasks), default=0) + 1
-    new_task = {"id": new_id, "title": task.title, "done": task.done}
-    tasks.append(new_task)
-    return new_task
+    cursor = conn.cursor()
+    # Insert the new task using parameterized queries to keep it safe
+    cursor.execute(
+        "INSERT INTO tasks (title, done) VALUES (?, ?)", 
+        (task.title, int(task.done))
+    )
+    conn.commit()
+    
+    # SQLite automatically assigns an ID; we fetch it here
+    new_id = cursor.lastrowid
+    
+    # Return the newly created task as required by the assignment
+    return {"id": new_id, "title": task.title, "done": task.done}
 
 
-# ---- Stage 4: Update + Delete ----
+# ---- Stage 3: Update and Delete (Database) ----
 @app.put("/tasks/{id}")
 def update_task(id: int, task: Task):
-    for existing in tasks:
-        if existing["id"] == id:
-            existing["title"] = task.title
-            existing["done"] = task.done
-            return existing
-    raise HTTPException(status_code=404, detail=f"Task {id} not found")
+    cursor = conn.cursor()
+    # Update the task in the database
+    cursor.execute(
+        "UPDATE tasks SET title=?, done=? WHERE id=?", 
+        (task.title, int(task.done), id)
+    )
+    conn.commit()
+    
+    # cursor.rowcount tells us how many rows were modified
+    if cursor.rowcount == 0:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+        
+    return {"id": id, "title": task.title, "done": task.done}
 
 
 @app.delete("/tasks/{id}", status_code=204)
 def delete_task(id: int):
-    for existing in tasks:
-        if existing["id"] == id:
-            tasks.remove(existing)
-            return
-    raise HTTPException(status_code=404, detail=f"Task {id} not found")
+    cursor = conn.cursor()
+    # Delete the task from the database
+    cursor.execute("DELETE FROM tasks WHERE id=?", (id,))
+    conn.commit()
+    
+    if cursor.rowcount == 0:
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
+        
+    return
