@@ -1,7 +1,7 @@
 import os
 import psycopg
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
@@ -88,7 +88,7 @@ async def validation_exception_handler(request, exc):
     )
 
 
-# ---- NEW Stage 1: Auth Endpoints ----
+# ---- Stage 1: Auth Endpoints ----
 @app.post("/auth/signup", status_code=201)
 def signup(credentials: UserCredentials):
     try:
@@ -122,6 +122,30 @@ def login(credentials: UserCredentials):
             status_code=401, 
             content={"error": "Invalid login credentials"}
         )
+
+
+# ---- NEW Stage 2: Public + Protected Endpoints ----
+@app.get("/public/info")
+def public_info():
+    # No auth required — anyone can hit this
+    return {"message": "This is a public endpoint. No login required."}
+
+@app.get("/protected/profile")
+def protected_profile(authorization: str = Header(None)):
+    # Expect header format: "Authorization: Bearer <access_token>"
+    if not authorization or not authorization.startswith("Bearer "):
+        return JSONResponse(status_code=401, content={"error": "Missing or invalid token"})
+
+    token = authorization.split(" ")[1]
+
+    try:
+        # Ask Supabase to verify the JWT and return the associated user
+        res = supabase.auth.get_user(token)
+        if not res or not res.user:
+            return JSONResponse(status_code=401, content={"error": "Invalid or expired token"})
+        return res.user.model_dump()
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "Invalid or expired token"})
 
 
 # ---- Stage 1: Root + health ----
