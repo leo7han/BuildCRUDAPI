@@ -1,9 +1,10 @@
 import os
 import psycopg
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Header, Depends
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, field_validator
 
 # NEW: Import the Supabase client
@@ -138,16 +139,25 @@ def public_info():
     return {"message": "Welcome stranger! This info is public."}
 
 
+# ---- Stage 5: HTTPBearer security scheme ----
+# This is what makes FastAPI mark any route using it as "locked" in Swagger,
+# so the /docs page shows a padlock icon and an "Authorize" button.
+# auto_error=False so we control the 401 response body ourselves (Stage 2's
+# exact {"error": "Access token required"} shape) instead of FastAPI's default.
+security = HTTPBearer(auto_error=False)
+
+
 # ---- Stage 4: Reusable auth guard (FastAPI dependency) ----
 # This replaces the token-checking that used to be pasted directly into
 # protected_profile. Any route that adds `Depends(get_current_user)` gets
-# the exact same guard, without duplicating the logic.
-def get_current_user(authorization: str = Header(None)):
+# the exact same guard, without duplicating the logic — and now also gets
+# the Swagger padlock for free, since it depends on `security`.
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     # Stage 2 check: was a bearer token even presented?
-    if not authorization or not authorization.startswith("Bearer "):
+    if not credentials or not credentials.credentials:
         raise HTTPException(status_code=401, detail={"error": "Access token required"})
 
-    token = authorization.split(" ")[1]
+    token = credentials.credentials
 
     # Stage 3 check: is the token actually valid? This calls Supabase over
     # the network, so a "yes" here is trustworthy — not just decoded locally.
