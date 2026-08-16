@@ -67,6 +67,17 @@ class Task(BaseModel):
             raise ValueError("title cannot be empty")
         return v
 
+class UserCredentials(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email", "password")
+    @classmethod   
+    def not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
 
 # ---- Validation error -> 400 (spec requires 400, FastAPI defaults to 422) ----
 @app.exception_handler(RequestValidationError)
@@ -77,11 +88,46 @@ async def validation_exception_handler(request, exc):
     )
 
 
+# ---- NEW Stage 1: Auth Endpoints ----
+@app.post("/auth/signup", status_code=201)
+def signup(credentials: UserCredentials):
+    try:
+        # Register the user in Supabase
+        res = supabase.auth.sign_up({
+            "email": credentials.email,
+            "password": credentials.password
+        })
+        # Return the user object
+        return res.user.model_dump() if res.user else {}
+    except Exception as e:
+        # Catch errors like "User already exists"
+        return JSONResponse(status_code=400, content={"error": str(e)})
+
+@app.post("/auth/login", status_code=200)
+def login(credentials: UserCredentials):
+    try:
+        # Authenticate with Supabase
+        res = supabase.auth.sign_in_with_password({
+            "email": credentials.email,
+            "password": credentials.password
+        })
+        # Return the Access Token (JWT) and Refresh Token
+        return {
+            "access_token": res.session.access_token,
+            "refresh_token": res.session.refresh_token
+        }
+    except Exception:
+        # If Supabase rejects the credentials, return a 401 Unauthorized
+        return JSONResponse(
+            status_code=401, 
+            content={"error": "Invalid login credentials"}
+        )
+
+
 # ---- Stage 1: Root + health ----
 @app.get("/")
 def read_root():
     return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
-
 
 @app.get("/health")
 def health_check():
@@ -102,7 +148,6 @@ def get_tasks():
             for row in rows:
                 tasks_list.append({"id": row[0], "title": row[1], "done": row[2]})
             return tasks_list
-
 
 @app.get("/tasks/{id}")
 def get_task(id: int):
@@ -154,7 +199,6 @@ def update_task(id: int, task: Task):
                 return JSONResponse(status_code=404, content={"error": "Task not found"})
                 
             return {"id": id, "title": task.title, "done": task.done}
-
 
 @app.delete("/tasks/{id}", status_code=204)
 def delete_task(id: int):
