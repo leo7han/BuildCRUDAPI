@@ -1,7 +1,7 @@
 import os
 import psycopg
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, Depends
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
@@ -87,6 +87,13 @@ async def validation_exception_handler(request, exc):
         content={"error": "Invalid request body"},
     )
 
+# ---- Reshape HTTPException output so it matches the {"error": "..."} shape the spec wants ----
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    if isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
+
 
 # ---- Stage 1: Auth Endpoints ----
 @app.post("/auth/signup", status_code=201)
@@ -124,28 +131,59 @@ def login(credentials: UserCredentials):
         )
 
 
-# ---- NEW Stage 2: Public + Protected Endpoints ----
+# ---- Stage 2: Public endpoint ----
 @app.get("/public/info")
 def public_info():
     # No auth required — anyone can hit this
-    return {"message": "This is a public endpoint. No login required."}
+    return {"message": "Welcome stranger! This info is public."}
 
-@app.get("/protected/profile")
-def protected_profile(authorization: str = Header(None)):
-    # Expect header format: "Authorization: Bearer <access_token>"
+
+# ---- Stage 4: Reusable auth guard (FastAPI dependency) ----
+# This replaces the token-checking that used to be pasted directly into
+# protected_profile. Any route that adds `Depends(get_current_user)` gets
+# the exact same guard, without duplicating the logic.
+def get_current_user(authorization: str = Header(None)):
+    # Stage 2 check: was a bearer token even presented?
     if not authorization or not authorization.startswith("Bearer "):
-        return JSONResponse(status_code=401, content={"error": "Missing or invalid token"})
+        raise HTTPException(status_code=401, detail={"error": "Access token required"})
 
     token = authorization.split(" ")[1]
 
+    # Stage 3 check: is the token actually valid? This calls Supabase over
+    # the network, so a "yes" here is trustworthy — not just decoded locally.
     try:
-        # Ask Supabase to verify the JWT and return the associated user
         res = supabase.auth.get_user(token)
         if not res or not res.user:
-            return JSONResponse(status_code=401, content={"error": "Invalid or expired token"})
-        return res.user.model_dump()
+            raise HTTPException(status_code=401, detail={"error": "Invalid or expired token"})
+    except HTTPException:
+        raise
     except Exception:
-        return JSONResponse(status_code=401, content={"error": "Invalid or expired token"})
+        raise HTTPException(status_code=401, detail={"error": "Invalid or expired token"})
+
+    # Attach both the verified user and their raw token — logout needs the token itself.
+    return {"user": res.user, "token": token}
+
+
+# ---- Stage 3: Protected profile route, now guarded by the dependency ----
+@app.get("/protected/profile")
+def protected_profile(current=Depends(get_current_user)):
+    return current["user"].model_dump()
+
+
+# ---- Stage 4: Second protected route — proves the guard is reusable, no new auth code ----
+@app.get("/protected/dashboard")
+def protected_dashboard(current=Depends(get_current_user)):
+    return {"message": f"Welcome back, {current['user'].email}! This is your dashboard."}
+
+
+# ---- Stage 4: Logout — also guarded, so only a logged-in user can log out ----
+@app.post("/auth/logout", status_code=204)
+def logout(current=Depends(get_current_user)):
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
+    return
 
 
 # ---- Stage 1: Root + health ----
