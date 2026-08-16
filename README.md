@@ -1,18 +1,22 @@
 # BuildCRUDAPI
 
-A **Task API** built with **FastAPI**, backed by **PostgreSQL** running in Docker. It supports full CRUD (Create, Read, Update, Delete) on a list of tasks, with input validation, correct HTTP status codes, and interactive API docs via Swagger UI.
+A **Task API** built with **FastAPI**, backed by **PostgreSQL** running in Docker, and secured with **Supabase Auth**. It supports full CRUD (Create, Read, Update, Delete) on a list of tasks, user sign up/log in/log out, and JWT-protected routes — all documented and testable via Swagger UI.
 
-The whole stack (API + database) starts with a single command: `docker compose up`.
+Supabase handles account storage, password hashing, and token signing. This API never touches a raw password or writes any cryptography itself — it only forwards credentials to Supabase and verifies the tokens it hands back.
 
 ## Architecture
 
 This project started with in-memory storage, moved to SQLite, and now uses PostgreSQL in Docker. At every stage, **the service and route logic did not change** — only the repository/storage layer was swapped out. This proves the API's architecture correctly separates business logic from data storage.
 
+Authentication was added as its own layer on top: a single reusable FastAPI dependency (`get_current_user`) verifies the caller's JWT against Supabase and is applied to every protected route, rather than duplicating the check per-route.
+
 ## Install & Run
 
-**Requirements:** [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+**Requirements:** [Docker Desktop](https://www.docker.com/products/docker-desktop/), or Python 3.10+ if running locally without Docker. Either way, you'll also need a free [Supabase](https://supabase.com) project.
 
-1. Copy `.env.example` to `.env` (the default values already match `compose.yaml`, so no edits are required to run locally):
+### Option A — Docker (recommended)
+
+1. Copy `.env.example` to `.env` and fill in your Supabase values (see [Environment Variables](#environment-variables) below):
    ```bash
    cp .env.example .env
    ```
@@ -28,37 +32,79 @@ docker compose down
 ```
 (Your data is safe — see [Persistence](#persistence) below. Use `docker compose down -v` only if you want to wipe the database volume too.)
 
+### Option B — Local dev without Docker
+
+1. Make sure Postgres is reachable at the `DATABASE_URL` in your `.env` (e.g. via `docker compose up db` if you just want the database containerized).
+2. Install dependencies and run the API directly:
+   ```bash
+   pip install -r requirements.txt
+   uvicorn main:app --reload --port 8000
+   ```
+3. The API is available at `http://localhost:8000`. Interactive docs are at `http://localhost:8000/docs`.
+
+You should see `Server running and connected to Supabase` in the terminal with no errors.
+
 ## Environment Variables
 
-| Variable       | Description                              | Example (from `.env.example`)                          |
-|----------------|-------------------------------------------|----------------------------------------------------------|
-| `DATABASE_URL` | Postgres connection string used by the API | `postgresql://postgres:dev@db:5432/tasks`                |
+| Variable       | Description                                                                 | Example (from `.env.example`)                       |
+|----------------|-------------------------------------------------------------------------------|--------------------------------------------------------|
+| `DATABASE_URL` | Postgres connection string used by the API                                    | `postgresql://postgres:dev@db:5432/tasks`               |
+| `SUPABASE_URL` | Your Supabase project URL (Project Settings → API)                            | —                                                         |
+| `SUPABASE_KEY` | Your Supabase **anon** public key — never the `service_role` key              | —                                                         |
+| `PORT`         | Port the API listens on when run outside Docker                               | `8000`                                                    |
 
-`.env` is git-ignored and holds your real local values. `.env.example` is committed so anyone cloning the repo knows what to set.
+`.env` is git-ignored and holds your real local values. `.env.example` is committed so anyone cloning the repo knows what to set. If you're setting up a new Supabase project from scratch, also turn **"Confirm email" off** under Authentication → Sign In / Providers → Email, so test accounts can log in immediately without clicking a confirmation link.
 
 ## Endpoints
 
-| Method | Path          | Description              |
-|--------|---------------|---------------------------|
-| GET    | `/`           | API info                  |
-| GET    | `/health`     | Health check               |
-| GET    | `/tasks`      | List all tasks             |
-| GET    | `/tasks/{id}` | Get a single task by id     |
-| POST   | `/tasks`      | Create a new task           |
-| PUT    | `/tasks/{id}` | Update an existing task      |
-| DELETE | `/tasks/{id}` | Delete a task                 |
+| Method | Path                    | Description                                                        | Auth required                    |
+|--------|--------------------------|---------------------------------------------------------------------|------------------------------------|
+| POST   | `/auth/signup`           | Create a new user account                                           | None                                |
+| POST   | `/auth/login`             | Authenticate and return a JWT                                       | None                                |
+| POST   | `/auth/logout`            | End the current session                                             | `Authorization: Bearer <token>`   |
+| GET    | `/public/info`            | Public, open data                                                   | None                                |
+| GET    | `/protected/profile`      | Return the logged-in user's profile                                  | `Authorization: Bearer <token>`   |
+| GET    | `/protected/dashboard`    | Second protected route (proves the auth guard is reusable)          | `Authorization: Bearer <token>`   |
+| GET    | `/`                       | API info                                                             | None                                |
+| GET    | `/health`                 | Health check                                                         | None                                |
+| GET    | `/tasks`                  | List all tasks                                                       | None                                |
+| GET    | `/tasks/{id}`             | Get a single task by id                                              | None                                |
+| POST   | `/tasks`                  | Create a new task                                                    | None                                |
+| PUT    | `/tasks/{id}`             | Update an existing task                                              | None                                |
+| DELETE | `/tasks/{id}`             | Delete a task                                                        | None                                |
 
 ## Status Codes
 
-| Code | Meaning                                          |
-|------|---------------------------------------------------|
-| 200  | Successful GET/PUT                                 |
-| 201  | Task created                                        |
-| 204  | Task deleted                                         |
-| 400  | Invalid request body (e.g. missing/empty title)       |
-| 404  | Task with given id not found                            |
+| Code | Meaning                                                        |
+|------|------------------------------------------------------------------|
+| 200  | Successful GET/PUT, or login                                     |
+| 201  | Resource created (task or user account)                          |
+| 204  | Deleted, or logout succeeded — no content returned                |
+| 400  | Invalid request body (e.g. missing/empty title, email, password) |
+| 401  | Missing, malformed, invalid, or expired token                     |
+| 404  | Task with given id not found                                       |
 
 ## Example Requests
+
+**Sign up:**
+```bash
+curl -i -X POST http://localhost:8000/auth/signup \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"test@example.com\",\"password\":\"password123\"}"
+```
+
+**Log in:**
+```bash
+curl -i -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d "{\"email\":\"test@example.com\",\"password\":\"password123\"}"
+```
+
+**Call a protected route:**
+```bash
+curl -i http://localhost:8000/protected/profile \
+  -H "Authorization: Bearer <PASTE_YOUR_ACCESS_TOKEN_HERE>"
+```
 
 **List tasks:**
 ```bash
@@ -90,8 +136,9 @@ content-type: application/json
 
 ## Swagger UI
 
-All endpoints are documented and testable at `/docs`:
-![Swagger UI](swaggerui.png)
+All endpoints are documented and testable at `/docs`, including bearer-token authorization on protected routes via the **Authorize** button:
+
+![Swagger UI with bearer auth](swaggeruiauth.png)
 
 ## Persistence
 
@@ -118,4 +165,9 @@ docker exec -it taskdb psql -U postgres -d tasks -c "SELECT * FROM tasks;"
 (3 rows)
 ```
 
-![POSTGRES](postgres.png)
+## Security notes
+
+- Passwords are never stored or hashed by this API — Supabase owns that entirely.
+- The `service_role` Supabase key is never used here, only the public `anon` key, which is safe to expose client-side.
+- Token verification happens via a live network call to Supabase (`supabase.auth.get_user`), not by decoding the JWT locally — so a tampered or expired token is always caught.
+- The auth guard is implemented once as a FastAPI dependency (`get_current_user`) and reused across every protected route, rather than duplicated per-route.
