@@ -6,10 +6,23 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
 
+# NEW: Import the Supabase client
+from supabase import create_client, Client
+
 # Load secrets from your .env file
 load_dotenv() 
 
+# ---- Stage 0: Supabase Setup ----
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 app = FastAPI()
+
+# NEW: Add startup event for Stage 0 checkpoint
+@app.on_event("startup")
+async def startup_event():
+    print("Server running and connected to Supabase")
 
 # ---- Stage 1: Postgres Setup ----
 # Helper function to get a fresh connection for each request
