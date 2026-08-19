@@ -10,6 +10,9 @@ from pydantic import BaseModel, field_validator
 # NEW: Import the Supabase client
 from supabase import create_client, Client
 
+# NEW WEEK 7: Import your LLM schemas
+from src.llm.schema import EnrichRequest, EnrichResponse, ResearchCategory
+
 # Load secrets from your .env file
 load_dotenv() 
 
@@ -140,27 +143,16 @@ def public_info():
 
 
 # ---- Stage 5: HTTPBearer security scheme ----
-# This is what makes FastAPI mark any route using it as "locked" in Swagger,
-# so the /docs page shows a padlock icon and an "Authorize" button.
-# auto_error=False so we control the 401 response body ourselves (Stage 2's
-# exact {"error": "Access token required"} shape) instead of FastAPI's default.
 security = HTTPBearer(auto_error=False)
 
 
 # ---- Stage 4: Reusable auth guard (FastAPI dependency) ----
-# This replaces the token-checking that used to be pasted directly into
-# protected_profile. Any route that adds `Depends(get_current_user)` gets
-# the exact same guard, without duplicating the logic — and now also gets
-# the Swagger padlock for free, since it depends on `security`.
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    # Stage 2 check: was a bearer token even presented?
     if not credentials or not credentials.credentials:
         raise HTTPException(status_code=401, detail={"error": "Access token required"})
 
     token = credentials.credentials
 
-    # Stage 3 check: is the token actually valid? This calls Supabase over
-    # the network, so a "yes" here is trustworthy — not just decoded locally.
     try:
         res = supabase.auth.get_user(token)
         if not res or not res.user:
@@ -170,7 +162,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     except Exception:
         raise HTTPException(status_code=401, detail={"error": "Invalid or expired token"})
 
-    # Attach both the verified user and their raw token — logout needs the token itself.
     return {"user": res.user, "token": token}
 
 
@@ -199,7 +190,7 @@ def logout(current=Depends(get_current_user)):
 # ---- Stage 1: Root + health ----
 @app.get("/")
 def read_root():
-    return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
+    return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks", "/enrich"]}
 
 @app.get("/health")
 def health_check():
@@ -284,3 +275,21 @@ def delete_task(id: int):
                 return JSONResponse(status_code=404, content={"error": "Task not found"})
                 
             return
+
+# ==========================================
+# WEEK 7: PUT AN LLM BEHIND YOUR API
+# ==========================================
+@app.post("/enrich", response_model=EnrichResponse)
+def enrich_record(payload: EnrichRequest):
+    # Stage 1: Stub Mode - skips the AI and returns safe, fake data instantly
+    if os.environ.get("LLM_STUB") == "1":
+        return EnrichResponse(
+            category=ResearchCategory.predictive_modeling,
+            summary="This is a stubbed summary returning instantly without calling the AI.",
+            quality_flags=[],
+            confidence=0.99,
+            reasoning="Returned hardcoded data because LLM_STUB=1"
+        )
+    
+    # We will put the real AI call here in Stage 2!
+    raise HTTPException(status_code=501, detail="Real AI call not implemented yet")
