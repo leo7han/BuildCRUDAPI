@@ -1,16 +1,19 @@
 import os
+import json
+from datetime import datetime
 import psycopg
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, ValidationError
+from openai import OpenAI
 
-# NEW: Import the Supabase client
+# Import the Supabase client
 from supabase import create_client, Client
 
-# NEW WEEK 7: Import your LLM schemas
+# Import your LLM schemas
 from src.llm.schema import EnrichRequest, EnrichResponse, ResearchCategory
 
 # Load secrets from your .env file
@@ -23,7 +26,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
 
-# NEW: Add startup event for Stage 0 checkpoint
+# Add startup event for Stage 0 checkpoint
 @app.on_event("startup")
 async def startup_event():
     print("Server running and connected to Supabase")
@@ -279,9 +282,10 @@ def delete_task(id: int):
 # ==========================================
 # WEEK 7: PUT AN LLM BEHIND YOUR API
 # ==========================================
+# Notice response_model=EnrichResponse is back! FastAPI will now validate and structure the final output.
 @app.post("/enrich", response_model=EnrichResponse)
 def enrich_record(payload: EnrichRequest):
-    # Stage 1: Stub Mode - skips the AI and returns safe, fake data instantly
+    # Stage 1: Stub Mode
     if os.environ.get("LLM_STUB") == "1":
         return EnrichResponse(
             category=ResearchCategory.predictive_modeling,
@@ -291,5 +295,71 @@ def enrich_record(payload: EnrichRequest):
             reasoning="Returned hardcoded data because LLM_STUB=1"
         )
     
-    # We will put the real AI call here in Stage 2!
-    raise HTTPException(status_code=501, detail="Real AI call not implemented yet")
+    with open("prompts/enrich-v1.md", "r", encoding="utf-8") as f:
+        system_prompt = f.read()
+
+    client = OpenAI(
+        base_url=os.environ["LLM_BASE_URL"], 
+        api_key=os.environ["LLM_API_KEY"]
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": payload.model_dump_json()}
+    ]
+
+    def clean_json(text: str) -> str:
+        """Removes markdown fences if the AI includes them."""
+        text = text.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines[0].startswith("```"): lines = lines[1:]
+            if lines and lines[-1].startswith("```"): lines = lines[:-1]
+            return "\n".join(lines).strip()
+        return text
+
+    # Call 1: The primary attempt
+    res = client.chat.completions.create(
+        model=os.environ["LLM_MODEL"],
+        messages=messages,
+        temperature=0.0
+    )
+    raw_output = res.choices[0].message.content
+    cleaned_output = clean_json(raw_output)
+
+    try:
+        # Validate against our Pydantic schema
+        return EnrichResponse.model_validate_json(cleaned_output)
+    
+    except (ValidationError, json.JSONDecodeError) as e:
+        # Call 2: The Repair Loop
+        repair_messages = list(messages)
+        repair_messages.append({"role": "assistant", "content": raw_output})
+        repair_messages.append({
+            "role": "user", 
+            "content": f"Your previous answer was rejected for this reason:\n{str(e)}\nReturn ONLY corrected valid JSON matching the schema."
+        })
+        
+        repair_res = client.chat.completions.create(
+            model=os.environ["LLM_MODEL"],
+            messages=repair_messages,
+            temperature=0.0
+        )
+        repair_raw = repair_res.choices[0].message.content
+        repair_cleaned = clean_json(repair_raw)
+        
+        try:
+            return EnrichResponse.model_validate_json(repair_cleaned)
+        except Exception as final_err:
+            # Stage 3: Quarantine on total failure
+            os.makedirs("logs", exist_ok=True)
+            with open("logs/quarantine.jsonl", "a", encoding="utf-8") as f:
+                entry = {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "input": payload.model_dump(),
+                    "error": str(final_err),
+                    "raw_output": repair_raw
+                }
+                f.write(json.dumps(entry) + "\n")
+            
+            raise HTTPException(status_code=422, detail="Model output violated schema and could not be repaired.")
