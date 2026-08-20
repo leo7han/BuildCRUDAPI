@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from datetime import datetime
 import psycopg
 from dotenv import load_dotenv
@@ -282,9 +283,18 @@ def delete_task(id: int):
 # ==========================================
 # WEEK 7: PUT AN LLM BEHIND YOUR API
 # ==========================================
-# Notice response_model=EnrichResponse is back! FastAPI will now validate and structure the final output.
 @app.post("/enrich", response_model=EnrichResponse)
 def enrich_record(payload: EnrichRequest):
+    # Stage 4: Kill switch[cite: 1]
+    if os.environ.get("LLM_ENABLED", "true").lower() == "false":
+        return EnrichResponse(
+            category=ResearchCategory.other,
+            summary="LLM processing disabled via kill switch.",
+            quality_flags=[],
+            confidence=0.0,
+            reasoning="Fallback response triggered by LLM_ENABLED=false."
+        )
+
     # Stage 1: Stub Mode
     if os.environ.get("LLM_STUB") == "1":
         return EnrichResponse(
@@ -298,9 +308,12 @@ def enrich_record(payload: EnrichRequest):
     with open("prompts/enrich-v1.md", "r", encoding="utf-8") as f:
         system_prompt = f.read()
 
+    # Stage 4: Explicit Timeout and Retries[cite: 1]
     client = OpenAI(
         base_url=os.environ["LLM_BASE_URL"], 
-        api_key=os.environ["LLM_API_KEY"]
+        api_key=os.environ["LLM_API_KEY"],
+        timeout=float(os.environ.get("LLM_TIMEOUT_SECONDS", 30.0)),
+        max_retries=2
     )
 
     messages = [
@@ -318,12 +331,21 @@ def enrich_record(payload: EnrichRequest):
             return "\n".join(lines).strip()
         return text
 
+    # Stage 4: Cost Logging timer[cite: 1]
+    start_time = time.time()
+    
     # Call 1: The primary attempt
     res = client.chat.completions.create(
         model=os.environ["LLM_MODEL"],
         messages=messages,
         temperature=0.0
     )
+    
+    # Calculate duration and tokens
+    duration_ms = round((time.time() - start_time) * 1000, 2)
+    tokens = res.usage.total_tokens if res.usage else 0
+    print(f"[COST LOG] Model: {os.environ['LLM_MODEL']} | Total Tokens: {tokens} | Duration: {duration_ms}ms")
+
     raw_output = res.choices[0].message.content
     cleaned_output = clean_json(raw_output)
 
