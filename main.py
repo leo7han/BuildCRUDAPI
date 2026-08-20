@@ -1,14 +1,21 @@
 import os
+import json
+import time
+from datetime import datetime
 import psycopg
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, ValidationError
+from openai import OpenAI
 
-# NEW: Import the Supabase client
+# Import the Supabase client
 from supabase import create_client, Client
+
+# Import your LLM schemas
+from src.llm.schema import EnrichRequest, EnrichResponse, ResearchCategory
 
 # Load secrets from your .env file
 load_dotenv() 
@@ -20,7 +27,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
 
-# NEW: Add startup event for Stage 0 checkpoint
+# Add startup event for Stage 0 checkpoint
 @app.on_event("startup")
 async def startup_event():
     print("Server running and connected to Supabase")
@@ -140,27 +147,16 @@ def public_info():
 
 
 # ---- Stage 5: HTTPBearer security scheme ----
-# This is what makes FastAPI mark any route using it as "locked" in Swagger,
-# so the /docs page shows a padlock icon and an "Authorize" button.
-# auto_error=False so we control the 401 response body ourselves (Stage 2's
-# exact {"error": "Access token required"} shape) instead of FastAPI's default.
 security = HTTPBearer(auto_error=False)
 
 
 # ---- Stage 4: Reusable auth guard (FastAPI dependency) ----
-# This replaces the token-checking that used to be pasted directly into
-# protected_profile. Any route that adds `Depends(get_current_user)` gets
-# the exact same guard, without duplicating the logic — and now also gets
-# the Swagger padlock for free, since it depends on `security`.
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    # Stage 2 check: was a bearer token even presented?
     if not credentials or not credentials.credentials:
         raise HTTPException(status_code=401, detail={"error": "Access token required"})
 
     token = credentials.credentials
 
-    # Stage 3 check: is the token actually valid? This calls Supabase over
-    # the network, so a "yes" here is trustworthy — not just decoded locally.
     try:
         res = supabase.auth.get_user(token)
         if not res or not res.user:
@@ -170,7 +166,6 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
     except Exception:
         raise HTTPException(status_code=401, detail={"error": "Invalid or expired token"})
 
-    # Attach both the verified user and their raw token — logout needs the token itself.
     return {"user": res.user, "token": token}
 
 
@@ -199,7 +194,7 @@ def logout(current=Depends(get_current_user)):
 # ---- Stage 1: Root + health ----
 @app.get("/")
 def read_root():
-    return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
+    return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks", "/enrich"]}
 
 @app.get("/health")
 def health_check():
@@ -284,3 +279,109 @@ def delete_task(id: int):
                 return JSONResponse(status_code=404, content={"error": "Task not found"})
                 
             return
+
+# ==========================================
+# WEEK 7: PUT AN LLM BEHIND YOUR API
+# ==========================================
+@app.post("/enrich", response_model=EnrichResponse)
+def enrich_record(payload: EnrichRequest):
+    # Stage 4: Kill switch[cite: 1]
+    if os.environ.get("LLM_ENABLED", "true").lower() == "false":
+        return EnrichResponse(
+            category=ResearchCategory.other,
+            summary="LLM processing disabled via kill switch.",
+            quality_flags=[],
+            confidence=0.0,
+            reasoning="Fallback response triggered by LLM_ENABLED=false."
+        )
+
+    # Stage 1: Stub Mode
+    if os.environ.get("LLM_STUB") == "1":
+        return EnrichResponse(
+            category=ResearchCategory.predictive_modeling,
+            summary="This is a stubbed summary returning instantly without calling the AI.",
+            quality_flags=[],
+            confidence=0.99,
+            reasoning="Returned hardcoded data because LLM_STUB=1"
+        )
+    
+    with open("prompts/enrich-v1.md", "r", encoding="utf-8") as f:
+        system_prompt = f.read()
+
+    # Stage 4: Explicit Timeout and Retries[cite: 1]
+    client = OpenAI(
+        base_url=os.environ["LLM_BASE_URL"], 
+        api_key=os.environ["LLM_API_KEY"],
+        timeout=float(os.environ.get("LLM_TIMEOUT_SECONDS", 30.0)),
+        max_retries=2
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": payload.model_dump_json()}
+    ]
+
+    def clean_json(text: str) -> str:
+        """Removes markdown fences if the AI includes them."""
+        text = text.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines[0].startswith("```"): lines = lines[1:]
+            if lines and lines[-1].startswith("```"): lines = lines[:-1]
+            return "\n".join(lines).strip()
+        return text
+
+    # Stage 4: Cost Logging timer[cite: 1]
+    start_time = time.time()
+    
+    # Call 1: The primary attempt
+    res = client.chat.completions.create(
+        model=os.environ["LLM_MODEL"],
+        messages=messages,
+        temperature=0.0
+    )
+    
+    # Calculate duration and tokens
+    duration_ms = round((time.time() - start_time) * 1000, 2)
+    tokens = res.usage.total_tokens if res.usage else 0
+    print(f"[COST LOG] Model: {os.environ['LLM_MODEL']} | Total Tokens: {tokens} | Duration: {duration_ms}ms")
+
+    raw_output = res.choices[0].message.content
+    cleaned_output = clean_json(raw_output)
+
+    try:
+        # Validate against our Pydantic schema
+        return EnrichResponse.model_validate_json(cleaned_output)
+    
+    except (ValidationError, json.JSONDecodeError) as e:
+        # Call 2: The Repair Loop
+        repair_messages = list(messages)
+        repair_messages.append({"role": "assistant", "content": raw_output})
+        repair_messages.append({
+            "role": "user", 
+            "content": f"Your previous answer was rejected for this reason:\n{str(e)}\nReturn ONLY corrected valid JSON matching the schema."
+        })
+        
+        repair_res = client.chat.completions.create(
+            model=os.environ["LLM_MODEL"],
+            messages=repair_messages,
+            temperature=0.0
+        )
+        repair_raw = repair_res.choices[0].message.content
+        repair_cleaned = clean_json(repair_raw)
+        
+        try:
+            return EnrichResponse.model_validate_json(repair_cleaned)
+        except Exception as final_err:
+            # Stage 3: Quarantine on total failure
+            os.makedirs("logs", exist_ok=True)
+            with open("logs/quarantine.jsonl", "a", encoding="utf-8") as f:
+                entry = {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "input": payload.model_dump(),
+                    "error": str(final_err),
+                    "raw_output": repair_raw
+                }
+                f.write(json.dumps(entry) + "\n")
+            
+            raise HTTPException(status_code=422, detail="Model output violated schema and could not be repaired.")

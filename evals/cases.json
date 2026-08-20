@@ -1,0 +1,66 @@
+[
+    {
+        "id": 1,
+        "input": {
+            "title": "1D CNN for EHR Readmission",
+            "raw_text": "We evaluate 1D dilated convolutions on 40k admissions. AUC reached 0.842."
+        },
+        "expected_category": "predictive_modeling"
+    },
+    {
+        "id": 2,
+        "input": {
+            "title": "BioBERT Tokenization",
+            "raw_text": "Using contextual representations from clinical notes improved 30-day readmission accuracy."
+        },
+        "expected_category": "clinical_nlp"
+    },
+    {
+        "id": 3,
+        "input": {
+            "title": "Pneumonia Detection X-Rays",
+            "raw_text": "Chest radiograph classification with 94.1% accuracy across 15,000 scans using ResNet-50."
+        },
+        "expected_category": "medical_imaging"
+    },
+    {
+        "id": 4,
+        "input": {
+            "title": "Vague Thoughts",
+            "raw_text": "I think machine learning could be nice for hospitals maybe but I have no data."
+        },
+        "expected_category": "other"
+    },
+    {
+        "id": 5,
+        "input": {
+            "title": "Predicting Sepsis Onset",
+            "raw_text": "A logistic regression model trained on ICU vital signs achieved an F1 score of 0.76."
+        },
+        "expected_category": "predictive_modeling"
+    },
+    {
+        "id": 6,
+        "input": {
+            "title": "Entity Extraction in Oncology",
+            "raw_text": "Extracting tumor sizes and stages from unstructured pathology reports using transformer models."
+        },
+        "expected_category": "clinical_nlp"
+    },
+    {
+        "id": 7,
+        "input": {
+            "title": "MRI Brain Tumor Segmentation",
+            "raw_text": "We propose a novel U-Net architecture for segmenting gliomas in 3D MRI scans."
+        },
+        "expected_category": "medical_imaging"
+    },
+    {
+        "id": 8,
+        "input": {
+            "title": "Hospital Cafeteria Menu",
+            "raw_text": "The cafeteria will now be serving pizza on Tuesdays and burgers on Thursdays."
+        },
+        "expected_category": "other"
+    }
+]
